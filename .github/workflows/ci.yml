@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  python-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps
+        run: |
+          cd python-backend
+          pip install fastapi uvicorn sqlalchemy pydantic pytest httpx
+      - name: Run tests
+        run: |
+          cd python-backend
+          pytest tests/ -v

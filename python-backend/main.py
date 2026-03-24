@@ -1,15 +1,15 @@
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI
 from pydantic import BaseModel
 from sqlalchemy import create_engine, Column, String, Float, Integer
-from sqlalchemy.orm import declarative_base, sessionmaker, Session
+from sqlalchemy.orm import declarative_base, sessionmaker
 import uuid, math
 
 app = FastAPI(title="GazeID Backend")
-
-# Fix SQLite multithreading limitation for FastAPI
-engine = create_engine("sqlite:///./gazeid.db", connect_args={"check_same_thread": False})
+import os
+DB_URL = os.environ.get("DATABASE_URL", "sqlite:///./gazeid.db")
+engine = create_engine(DB_URL)
 Base = declarative_base()
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Session = sessionmaker(bind=engine)
 
 class PlayerRecord(Base):
     __tablename__ = "players"
@@ -45,62 +45,64 @@ def compute_fatigue(pupil: float, blink_interval: float) -> float:
 
 MATCH_TOLERANCE = 0.12
 
-# Dependency to yield the database session securely
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
 @app.post("/identify", response_model=IdentifyResponse)
-def identify_player(req: IdentifyRequest, db: Session = Depends(get_db)):
-    players = db.query(PlayerRecord).all()
+def identify_player(req: IdentifyRequest):
+    db = Session()
+    try:
+        players = db.query(PlayerRecord).all()
 
-    best_match = None
-    best_score = float("inf")
+        best_match = None
+        best_score = float("inf")
 
-    for p in players:
-        # Prevent TypeError if DB contains nulls for older records
-        if p.avg_pupil_diameter is None:
-            continue
-            
-        diff = abs(p.avg_pupil_diameter - req.avg_pupil_diameter)
-        if diff < MATCH_TOLERANCE and diff < best_score:
-            best_score = diff
-            best_match = p
+        for p in players:
+            diff = abs(p.avg_pupil_diameter - req.avg_pupil_diameter)
+            if diff < MATCH_TOLERANCE and diff < best_score:
+                best_score = diff
+                best_match = p
 
-    if best_match:
-        best_match.session_count += 1
+        if best_match:
+            best_match.session_count += 1
+            db.commit()
+            # Read all values BEFORE closing session
+            pid   = best_match.id
+            pname = best_match.display_name
+            fatigue = compute_fatigue(req.avg_pupil_diameter, req.avg_blink_interval)
+            db.close()
+            return IdentifyResponse(
+                player_id=pid,
+                display_name=pname,
+                is_new_player=False,
+                fatigue_score=fatigue
+            )
+
+        # New player
+        new_player = PlayerRecord(
+            avg_pupil_diameter=req.avg_pupil_diameter,
+            avg_blink_interval=req.avg_blink_interval
+        )
+        db.add(new_player)
         db.commit()
-        db.refresh(best_match)
+        db.refresh(new_player)
+        # Read all values BEFORE closing session
+        pid   = new_player.id
+        pname = new_player.display_name
         fatigue = compute_fatigue(req.avg_pupil_diameter, req.avg_blink_interval)
+        db.close()
         return IdentifyResponse(
-            player_id=best_match.id,
-            display_name=best_match.display_name,
-            is_new_player=False,
+            player_id=pid,
+            display_name=pname,
+            is_new_player=True,
             fatigue_score=fatigue
         )
-
-    # New player
-    new_player = PlayerRecord(
-        avg_pupil_diameter=req.avg_pupil_diameter,
-        avg_blink_interval=req.avg_blink_interval
-    )
-    db.add(new_player)
-    db.commit()
-    db.refresh(new_player)
-    fatigue = compute_fatigue(req.avg_pupil_diameter, req.avg_blink_interval)
-    return IdentifyResponse(
-        player_id=new_player.id,
-        display_name=new_player.display_name,
-        is_new_player=True,
-        fatigue_score=fatigue
-    )
+    except Exception as e:
+        db.close()
+        raise e
 
 @app.get("/players")
-def list_players(db: Session = Depends(get_db)):
+def list_players():
+    db = Session()
     players = db.query(PlayerRecord).all()
+    db.close()
     return [{"id": p.id, "name": p.display_name, "sessions": p.session_count} for p in players]
 
 @app.get("/health")
