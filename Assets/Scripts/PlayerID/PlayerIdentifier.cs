@@ -1,90 +1,62 @@
 using System.Collections.Generic;
 using UnityEngine;
-using GazeID.Tracking;
 
-namespace GazeID.Player
+public class PlayerIdentifier : MonoBehaviour
 {
-    [System.Serializable]
-    public class GazeProfile
+    [SerializeField] private int _calibrationFrames = 300;
+
+    public string CurrentPlayerID { get; private set; } = "Unknown";
+    public float CalibrationProgress => (float)_frameCount / _calibrationFrames;
+
+    private readonly List<float> _pupilSamples = new List<float>(512);
+    private int   _blinkCount;
+    private float _sessionStartSec;
+    private int   _frameCount;
+    private bool  _wasBlinking;
+
+    private void Start()
+{
+    _sessionStartSec = Time.realtimeSinceStartup;
+    if (GazeDataCollector.Instance != null)
+        GazeDataCollector.Instance.OnGazeFrame += HandleFrame;
+    else
+        Debug.LogError("[PlayerID] GazeDataCollector instance not found!");
+}
+
+    private void OnDisable()
     {
-        public string PlayerID;
-        public string DisplayName;
-        public float  AvgPupilDiameter;
-        public float  AvgBlinkIntervalSec;
-        public long   LastSeenMs;
+        if (GazeDataCollector.Instance != null)
+            GazeDataCollector.Instance.OnGazeFrame -= HandleFrame;
     }
 
-    public class PlayerIdentifier : MonoBehaviour
+    private void HandleFrame(GazeFrame frame)
     {
-        [Header("Identification Thresholds")]
-        [SerializeField] private float _pupilMatchTolerance  = 0.08f;
-        [SerializeField] private float _blinkMatchTolerance  = 0.9f;
-        [SerializeField] private int   _calibrationFrames    = 300; // 5 sec @ 60fps
+        _frameCount++;
+        _pupilSamples.Add(frame.PupilDiameter);
 
-        public string  CurrentPlayerID   { get; private set; } = "Unknown";
-        public bool    IsCalibrating      => _frameCount < _calibrationFrames;
-        public float   CalibrationProgress => (float)_frameCount / _calibrationFrames;
+        if (frame.IsBlinking && !_wasBlinking) _blinkCount++;
+        _wasBlinking = frame.IsBlinking;
 
-        // Object-pooled list to avoid allocs — GC tuning
-        private readonly List<float> _pupilSamples = new List<float>(512);
-        private int   _blinkCount;
-        private float _sessionStartSec;
-        private int   _frameCount;
+        if (_frameCount == _calibrationFrames)
+            FinalizeCalibration();
+    }
 
-        private void OnEnable()
-        {
-            _sessionStartSec = Time.realtimeSinceStartup;
-            GazeDataCollector.Instance.OnGazeFrame += HandleFrame;
-        }
+    private void FinalizeCalibration()
+    {
+        float avgPupil = 0f;
+        for (int i = 0; i < _pupilSamples.Count; i++) avgPupil += _pupilSamples[i];
+        avgPupil /= _pupilSamples.Count;
 
-        private void OnDisable()
-        {
-            if (GazeDataCollector.Instance != null)
-                GazeDataCollector.Instance.OnGazeFrame -= HandleFrame;
-        }
+        float sessionDur = Time.realtimeSinceStartup - _sessionStartSec;
+        float avgBlink = _blinkCount > 0 ? sessionDur / _blinkCount : 5f;
 
-        private bool _wasBlinking;
+        Debug.Log($"[PlayerID] Calibration done. Pupil: {avgPupil:F3}, Blink interval: {avgBlink:F2}s");
 
-        private void HandleFrame(GazeFrame frame)
-        {
-            _frameCount++;
-            _pupilSamples.Add(frame.PupilDiameter);
-
-            // Count blink transitions (false→true)
-            if (frame.IsBlinking && !_wasBlinking) _blinkCount++;
-            _wasBlinking = frame.IsBlinking;
-
-            if (_frameCount == _calibrationFrames)
-                FinalizeCalibration();
-        }
-
-        private void FinalizeCalibration()
-        {
-            float avgPupil = ComputeAverage(_pupilSamples);
-            float sessionDur = Time.realtimeSinceStartup - _sessionStartSec;
-            float avgBlinkInterval = _blinkCount > 0 ? sessionDur / _blinkCount : 5f;
-
-            var profile = new GazeProfile
-            {
-                AvgPupilDiameter    = avgPupil,
-                AvgBlinkIntervalSec = avgBlinkInterval,
-                LastSeenMs          = System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
-            };
-
-            // Send to API for DB match / register
-            NetworkingManager.Instance.IdentifyOrRegister(profile, id =>
+        if (NetworkingManager.Instance != null)
+            NetworkingManager.Instance.IdentifyOrRegister(avgPupil, avgBlink, id =>
             {
                 CurrentPlayerID = id;
                 Debug.Log($"[PlayerID] Identified as: {id}");
             });
-        }
-
-        private float ComputeAverage(List<float> samples)
-        {
-            if (samples.Count == 0) return 0f;
-            float sum = 0f;
-            for (int i = 0; i < samples.Count; i++) sum += samples[i];
-            return sum / samples.Count;
-        }
     }
 }
