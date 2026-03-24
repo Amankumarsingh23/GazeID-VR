@@ -1,0 +1,13 @@
+{
+    "venvPath": "c:\\Users\\aman8\\GazeID-VR\\python-backend",
+    "venv": "venv",
+    "executionEnvironments": [
+        {
+            "root": "python-backend",
+            "extraPaths": [
+                "python-backend",
+                "python-backend/venv/Lib/site-packages"
+            ]
+        }
+    ]
+}

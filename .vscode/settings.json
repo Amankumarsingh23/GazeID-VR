@@ -51,5 +51,10 @@
         "temp/": true,
         "Temp/": true
     },
-    "dotnet.defaultSolution": "GazeID-VR.sln"
+    "dotnet.defaultSolution": "GazeID-VR.sln",
+    "python.defaultInterpreterPath": "c:\\Users\\aman8\\GazeID-VR\\python-backend\\venv\\Scripts\\python.exe",
+    "python.analysis.extraPaths": [
+        "./python-backend",
+        "./python-backend/venv/Lib/site-packages"
+    ]
 }
